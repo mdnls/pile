@@ -1,0 +1,73 @@
+dim: 2
+gridpts: 30
+key: 641
+model:
+  dims:
+  - 2
+  - 512
+  - 512
+  - 512
+  - 1
+  id: mlp
+name: DenseNN-poisson
+run-id: 0
+train:
+  diagnostics_interval: 1000
+  opt:
+    id: adam
+    lr: 0.0001
+    steps: 10000
+  reg:
+    DATA: !!python/object/apply:jax._src.array._reconstruct_array
+    - &id001 !!python/name:numpy.core.multiarray._reconstruct ''
+    - !!python/tuple
+      - &id002 !!python/name:numpy.ndarray ''
+      - !!python/tuple
+        - 0
+      - !!binary |
+        Yg==
+    - !!python/tuple
+      - 1
+      - !!python/tuple []
+      - &id003 !!python/object/apply:numpy.dtype
+        args:
+        - f4
+        - false
+        - true
+        state: !!python/tuple
+        - 3
+        - <
+        - null
+        - null
+        - null
+        - -1
+        - -1
+        - 0
+      - false
+      - !!binary |
+        CtcjPA==
+    - named_shape: &id004 {}
+      weak_type: false
+    PINN: !!python/object/apply:jax._src.array._reconstruct_array
+    - *id001
+    - !!python/tuple
+      - *id002
+      - !!python/tuple
+        - 0
+      - !!binary |
+        Yg==
+    - !!python/tuple
+      - 1
+      - !!python/tuple []
+      - *id003
+      - false
+      - !!binary |
+        CtcjPA==
+    - named_shape: *id004
+      weak_type: false
+  samples:
+    N: 1000
+    dist: uniform
+  truth:
+    id: poisson-exA
+    noise: 0.01

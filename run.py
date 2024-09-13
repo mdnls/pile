@@ -1,0 +1,197 @@
+from models import Poisson2D, RBF, Cauchy, ResNNGP, DenseNNGP, NNet, make_mlp, Kernel, Kernel2
+import jax
+import jax.numpy as jnp
+import jax.random as jr
+import cheb
+import optax
+import neural_tangents as nt
+import tqdm
+import pickle
+import yaml
+import os
+
+def retrieve_samples(config, key):
+    samples_cfg = config['train']['samples']
+    N = samples_cfg['N']
+    dim = config['dim']
+    dist = samples_cfg['dist']
+
+    if dist == 'uniform':
+        samples = 2 * (jr.uniform(shape=(N, dim), key=key) - 0.5)
+        return samples
+    else:
+        raise NotImplementedError('This distribution is not implemented')
+
+
+def retrieve_optimizer(config):
+    id = config['train']['opt']['id']
+    if id == "adam":
+        optimizer = optax.adam(config['train']['opt']['lr'])
+    else:
+        raise ValueError("invalid optimizer")
+
+    return optimizer
+
+
+def retrieve_kernel(config, op):
+    id = config['model']['kernel']['id'].lower()
+    if id == "rbf":
+        return RBF(variance=config['model']['kernel']['variance'], op=op)
+    elif id == "empiricalresnngp":
+        return ResNNGP(width=config['model']['kernel']['width'],
+                       depth=config['model']['kernel']['depth'],
+                       op=op)
+    elif id == "empiricaldensenngp":
+        return DenseNNGP(width=config['model']['kernel']['width'],
+                         depth=config['model']['kernel']['depth'],
+                         op=op)
+    elif id == "infiniteresnngp":
+        raise NotImplementedError("This kernel is not implemented")
+    elif id == "infinitedensenngp":
+        raise NotImplementedError("This kernel is not implemented")
+    else:
+        raise NotImplementedError("This kernel is not implemented")
+
+
+def retrieve_op(config):
+    id = config['train']['truth']['id'].lower()
+    if id == "poisson-exa":
+        return Poisson2D()
+    else:
+        raise NotImplementedError("This operator is not implemented")
+
+
+def retrieve_grid(config):
+    N_grid = config['gridpts']
+    assert config['dim'] == 2, "dimension must be two in current implementation"
+    ax_grid, weights = cheb.gridpts(N_grid, with_weights=True)
+    dim_grid = jnp.stack(jnp.meshgrid(ax_grid, ax_grid), axis=-1)
+    dim_weights = jnp.kron(weights, weights)
+    return ax_grid, weights, dim_grid, dim_weights
+
+
+def retrieve_model(config, key):
+    if config["model"]["id"].lower() == "mlp":
+        return make_mlp(dims=config["model"]["dims"], key=key)
+    else:
+        raise ValueError("IMPLEMENT OTHER KERNELS NEXT")
+
+
+def run_diagnostics(model, operator, W, X, Z, Y_train, Y_grid, config):
+    params = model.parameters
+
+    model_gen_error = jnp.linalg.norm(jnp.sqrt(W) @ (model.apply_fn(params, Z) - Y_grid)) ** 2 / len(Z)
+    model_phys_error = jnp.linalg.norm(
+        jnp.sqrt(W) @ jax.vmap(operator.apply(lambda _Z: model.apply_fn(params, _Z)[0]), in_axes=(0,))(Z)) ** 2 / len(Z)
+
+    kernelizer = nt.empirical_kernel_fn(model.apply_fn)
+    kfunc = lambda x, y: kernelizer(x, y, 'nngp', params)
+    kernel = Kernel2(kfunc, operator)
+
+    PILE, ker_phys_error, ker_gen_error = pile(W, X, Z, Y_train, Y_grid, kernel, config)
+
+    diagnostics = {
+        "model_gen_error": model_gen_error,
+        "model_phys_error": model_phys_error,
+        "ker_gen_error": ker_gen_error,
+        "ker_phys_error": ker_phys_error,
+        "pile": PILE
+    }
+    return diagnostics
+
+def save_diagnostics(diagnostics, i, config):
+    if not os.path.exists(f"expts/{config['name']}/diagnostics-{config['run-id']}"):
+        os.makedirs(f"expts/{config['name']}/diagnostics-{config['run-id']}")
+
+        with open(os.path.join(f"expts/{config['name']}/diagnostics-{config['run-id']}/config.yml"), "w+") as f_out:
+            yaml.dump(config, f_out)
+
+    with open(f"expts/{config['name']}/diagnostics-{config['run-id']}/d_{i}.pkl", "wb+") as f_out:
+        f_out.write(pickle.dumps(diagnostics))
+def pile(W, X, Z, Y_train, Y_grid, kernel, config):
+    data_reg = config['train']['reg']['DATA']
+    pinn_reg = config['train']['reg']['PINN']
+
+    N = len(X)
+    M = len(Z)
+    gamma = data_reg / N
+    rho = pinn_reg / N
+
+    W = jnp.diag(W)
+
+    # fitting process:
+    #  generate K, H, G, W
+    Kxx = kernel.K(X, X)
+    Kzz = kernel.K(Z, Z)
+    Kxz = kernel.K(X, Z)
+    Hxz = kernel.H(X, Z)
+    Hzz = kernel.H(Z, Z)
+    G = kernel.G(Z, Z)
+
+
+    #  compute fhat, ghat, L(fhat ghat)
+    cov = jnp.block([[Kxx, Hxz, Kxz], [Hxz.T, G, Hzz.T], [Kxz.T, Hzz, Kzz]])
+    In = jnp.eye(N)
+    O = jnp.zeros((N, M))
+    Om = jnp.zeros((M, M))
+    noise = jnp.block([[gamma * In, O, O], [O.T, rho * W, Om], [O.T, Om, Om]])
+    Y_ = jnp.concatenate((Y_train, jnp.zeros((2 * M, 1))), axis=0)
+    Yhat = jnp.linalg.solve(jnp.eye(N + 2 * M) + cov @ noise, cov @ noise @ Y_)
+    Fhat = Yhat[:N]
+    Ghat = Yhat[N:N + M]
+    Fhat_grid = Yhat[N + M:]
+
+    #  compute PILE
+    L = gamma * jnp.linalg.norm(Y_train - Fhat) ** 2 + \
+        rho * jnp.linalg.norm(jnp.sqrt(W) @ Ghat) ** 2 + \
+        jnp.sum(Yhat.flatten() * jnp.linalg.solve(cov, Yhat).flatten())
+
+    _, logdet = jnp.linalg.slogdet(jnp.eye(N + M) + noise[:N + M, :N + M] @ cov[:N + M, :N + M])
+    PILE = L + 0.5 * logdet
+
+    ker_phys_loss = jnp.linalg.norm(W @ Ghat) ** 2 / M
+    ker_data_loss = jnp.linalg.norm(jnp.sqrt(W) @ (Fhat_grid - Y_grid)) ** 2 / N
+
+    return PILE, ker_phys_loss, ker_data_loss
+
+
+def run(config, key):
+    pinn_reg = config['train']['reg']['PINN']
+    data_reg = config['train']['reg']['DATA']
+    operator = retrieve_op(config)
+    optimizer = retrieve_optimizer(config)
+    model = retrieve_model(config, key)
+    X = retrieve_samples(config, key)
+    _, _, dim_grid, W = retrieve_grid(config)
+    Z = dim_grid.reshape((-1, 2))
+
+    noise_var = config['train']['truth']['noise']
+    Y_true = operator.eval_solution(X)
+    Y_noisy = Y_true + jnp.sqrt(noise_var) * jr.normal(key, shape=(len(X), 1))
+    Y_grid = operator.eval_solution(Z)
+
+    opt_steps = config['train']['opt']['steps']
+    diagnostics_interval = config['train']['diagnostics_interval']
+
+    if opt_steps > 0:
+        opt_params = optimizer.init(model.parameters)
+        model_params = model.parameters
+
+        train_loss = lambda p: (data_reg / len(X)) * jnp.linalg.norm(model.apply_fn(p, X) - Y_noisy) ** 2 + \
+                               (pinn_reg / len(Z)) * jnp.linalg.norm(jax.vmap(operator.apply(lambda _Z: model.apply_fn(p, _Z)[0]), in_axes=(0,))(Z)) ** 2
+
+
+        cur_loss = 0
+        t = tqdm.tqdm(opt_steps)
+        for i in range(opt_steps):
+            if i % diagnostics_interval == 0:
+                model = NNet(parameters=model_params, apply_fn=model.apply_fn, key=key)
+                diagnostics = run_diagnostics(model, operator, W, X, Z, Y_noisy, Y_grid, config)
+                diagnostics['iteration'] = i
+                diagnostics['train_loss'] = cur_loss
+                save_diagnostics(diagnostics, i, config)
+            cur_loss, grad = jax.value_and_grad(train_loss)(model_params)
+            updates, opt_params = optimizer.update(grad, opt_params, model_params)
+            model_params = optax.apply_updates(model_params, updates)
+            t.set_description(f'Training loss: {cur_loss:.8f}')
+            t.update(1)

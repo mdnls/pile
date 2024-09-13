@@ -1,0 +1,33 @@
+dim: 2
+gridpts: 30
+key: 641
+model:
+  dims:
+  - 2
+  - 512
+  - 512
+  - 512
+  - 1
+  id: mlp
+name: DenseNN-poisson
+train:
+  diagnostics_interval: 1000
+  opt:
+    id: adam
+    lr: 0.0001
+    steps: 10000
+  reg:
+    DATA:
+    - 0.01
+    - 10
+    - 12
+    PINN:
+    - 0.01
+    - 10000
+    - 12
+  samples:
+    N: 1000
+    dist: uniform
+  truth:
+    id: poisson-exA
+    noise: 0.01
