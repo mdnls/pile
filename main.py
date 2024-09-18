@@ -40,8 +40,8 @@ def main(config_fname, overwrite=False):
         for d in DATA_reg_vals:
             print(f"\n\n Config {name} - pinn reg = {p}, data reg = {d}")
             _config = copy.deepcopy(config)
-            _config['train']['reg']['PINN'] = p
-            _config['train']['reg']['DATA'] = d
+            _config['train']['reg']['PINN'] = float(p)
+            _config['train']['reg']['DATA'] = float(d)
             _config['run-id'] = i
             i += 1
             run(config=_config, key=key)

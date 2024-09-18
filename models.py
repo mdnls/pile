@@ -234,7 +234,6 @@ class ResNNGP(Kernel):
 
 
 class NNet(NamedTuple):
-    parameters: object
     apply_fn: object
     key: object
 
@@ -245,8 +244,8 @@ def make_mlp(dims, key):
     layers.append(stax.Dense(dims[-1], b_std=1.0))
 
     init_fn, apply_fn, _ = stax.serial(*layers)
-
-    return NNet(parameters=init_fn(key, input_shape=(dims[0],))[1], apply_fn=apply_fn, key=key)
+    parameters = init_fn(key, input_shape=(dims[0],))[1]
+    return NNet(apply_fn=apply_fn, key=key), parameters
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-name: 'DenseNN-poisson'
+name: 'DenseNN-poisson-smallnet'
 dim: 2
 gridpts: 30
 key: 641
@@ -8,7 +8,9 @@ train:
     id: 'adam'
     steps: 10000
     lr: 0.0001
-  diagnostics_interval: 1000
+  diagnostics:
+    gen_every: 10
+    pile_every: 1000
   truth:
       id: 'poisson-exA'
       noise: 0.01

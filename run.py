@@ -77,38 +77,31 @@ def retrieve_model(config, key):
         raise ValueError("IMPLEMENT OTHER KERNELS NEXT")
 
 
-def run_diagnostics(model, operator, W, X, Z, Y_train, Y_grid, config):
-    params = model.parameters
+def save_diagnostics(diagnostics, config):
+    d_name = f"diagnostics-p={config['train']['reg']['PINN']:.4f}-g={config['train']['reg']['DATA']:.4f}"
+    if not os.path.exists(f"expts/{config['name']}/{d_name}"):
+        os.makedirs(f"expts/{config['name']}/{d_name}")
+
+        with open(os.path.join(f"expts/{config['name']}/{d_name}/config.yml"), "w+") as f_out:
+            yaml.dump(config, f_out)
+
+    with open(f"expts/{config['name']}/{d_name}/diagnostics.pkl", "wb+") as f_out:
+        f_out.write(pickle.dumps(diagnostics))
+
+def generalization_error(model, params, operator, W, Z, Y_grid):
 
     model_gen_error = jnp.linalg.norm(jnp.sqrt(W) @ (model.apply_fn(params, Z) - Y_grid)) ** 2 / len(Z)
     model_phys_error = jnp.linalg.norm(
         jnp.sqrt(W) @ jax.vmap(operator.apply(lambda _Z: model.apply_fn(params, _Z)[0]), in_axes=(0,))(Z)) ** 2 / len(Z)
 
+    return (model_gen_error, model_phys_error)
+
+def pile(W, X, Z, Y_train, Y_grid, model, params, operator, config):
+
     kernelizer = nt.empirical_kernel_fn(model.apply_fn)
     kfunc = lambda x, y: kernelizer(x, y, 'nngp', params)
     kernel = Kernel2(kfunc, operator)
 
-    PILE, ker_phys_error, ker_gen_error = pile(W, X, Z, Y_train, Y_grid, kernel, config)
-
-    diagnostics = {
-        "model_gen_error": model_gen_error,
-        "model_phys_error": model_phys_error,
-        "ker_gen_error": ker_gen_error,
-        "ker_phys_error": ker_phys_error,
-        "pile": PILE
-    }
-    return diagnostics
-
-def save_diagnostics(diagnostics, i, config):
-    if not os.path.exists(f"expts/{config['name']}/diagnostics-{config['run-id']}"):
-        os.makedirs(f"expts/{config['name']}/diagnostics-{config['run-id']}")
-
-        with open(os.path.join(f"expts/{config['name']}/diagnostics-{config['run-id']}/config.yml"), "w+") as f_out:
-            yaml.dump(config, f_out)
-
-    with open(f"expts/{config['name']}/diagnostics-{config['run-id']}/d_{i}.pkl", "wb+") as f_out:
-        f_out.write(pickle.dumps(diagnostics))
-def pile(W, X, Z, Y_train, Y_grid, kernel, config):
     data_reg = config['train']['reg']['DATA']
     pinn_reg = config['train']['reg']['PINN']
 
@@ -160,7 +153,7 @@ def run(config, key):
     data_reg = config['train']['reg']['DATA']
     operator = retrieve_op(config)
     optimizer = retrieve_optimizer(config)
-    model = retrieve_model(config, key)
+    model, model_params = retrieve_model(config, key)
     X = retrieve_samples(config, key)
     _, _, dim_grid, W = retrieve_grid(config)
     Z = dim_grid.reshape((-1, 2))
@@ -171,27 +164,49 @@ def run(config, key):
     Y_grid = operator.eval_solution(Z)
 
     opt_steps = config['train']['opt']['steps']
-    diagnostics_interval = config['train']['diagnostics_interval']
+    gen_diagnostics_interval = config['train']['diagnostics']['gen_every']
+    pile_diagnostics_interval = config['train']['diagnostics']['pile_every']
 
     if opt_steps > 0:
-        opt_params = optimizer.init(model.parameters)
-        model_params = model.parameters
+        opt_params = optimizer.init(model_params)
 
         train_loss = lambda p: (data_reg / len(X)) * jnp.linalg.norm(model.apply_fn(p, X) - Y_noisy) ** 2 + \
                                (pinn_reg / len(Z)) * jnp.linalg.norm(jax.vmap(operator.apply(lambda _Z: model.apply_fn(p, _Z)[0]), in_axes=(0,))(Z)) ** 2
 
 
         cur_loss = 0
+        gen_errors = []
+        pile_scores = []
+
         t = tqdm.tqdm(opt_steps)
         for i in range(opt_steps):
-            if i % diagnostics_interval == 0:
-                model = NNet(parameters=model_params, apply_fn=model.apply_fn, key=key)
-                diagnostics = run_diagnostics(model, operator, W, X, Z, Y_noisy, Y_grid, config)
-                diagnostics['iteration'] = i
-                diagnostics['train_loss'] = cur_loss
-                save_diagnostics(diagnostics, i, config)
+            if i % gen_diagnostics_interval == 0:
+                gen_error = generalization_error(model, model_params, operator, W, Z, Y_grid)
+                gen_errors.append({
+                    "iter": i,
+                    "model_gen_error": gen_error[0],
+                    "model_phys_error": gen_error[1]
+                })
+
+                diagnostics = {
+                    "generalization": gen_errors,
+                    "pile": pile_scores
+                }
+                print(gen_error)
+                save_diagnostics(diagnostics, config)
+
+            if i % pile_diagnostics_interval == 0:
+                pile_score = pile(W, X, Z, Y_noisy, Y_grid, model, model_params, operator, config)
+                pile_scores.append({
+                    "iter": i,
+                    "ker_gen_error": pile_score[2],
+                    "ker_phys_error": pile_score[1],
+                    "pile": pile_score[0]
+                })
+                print(pile_score[0])
             cur_loss, grad = jax.value_and_grad(train_loss)(model_params)
             updates, opt_params = optimizer.update(grad, opt_params, model_params)
             model_params = optax.apply_updates(model_params, updates)
             t.set_description(f'Training loss: {cur_loss:.8f}')
             t.update(1)
+
