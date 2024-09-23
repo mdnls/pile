@@ -108,8 +108,7 @@ def pile(W, X, Z, Y_train, Y_grid, model, params, operator, config):
     N = len(X)
     M = len(Z)
     gamma = data_reg / N
-    rho = pinn_reg / N
-
+    rho = pinn_reg
     W = jnp.diag(W)
 
     # fitting process:
@@ -134,20 +133,107 @@ def pile(W, X, Z, Y_train, Y_grid, model, params, operator, config):
     Ghat = Yhat[N:N + M]
     Fhat_grid = Yhat[N + M:]
 
+    eta = jnp.exp(-jnp.log(gamma / (2*jnp.pi)) * (N/(N+M)) + \
+                  -(jnp.sum(jnp.log(jnp.diag(W))) + jnp.log(rho / (2*jnp.pi))) * (1/(N+M)))
     #  compute PILE
     L = gamma * jnp.linalg.norm(Y_train - Fhat) ** 2 + \
         rho * jnp.linalg.norm(jnp.sqrt(W) @ Ghat) ** 2 + \
-        jnp.sum(Yhat.flatten() * jnp.linalg.solve(cov, Yhat).flatten())
+        jnp.sum(Yhat[:N+M].flatten() * jnp.linalg.solve(cov[:N+M,:N+M], Yhat[:N+M]).flatten())
 
     _, logdet = jnp.linalg.slogdet(jnp.eye(N + M) + noise[:N + M, :N + M] @ cov[:N + M, :N + M])
-    PILE = L + 0.5 * logdet
+    PILE = eta * L + 0.5 * logdet
 
     ker_phys_loss = jnp.linalg.norm(W @ Ghat) ** 2 / M
     ker_data_loss = jnp.linalg.norm(jnp.sqrt(W) @ (Fhat_grid - Y_grid)) ** 2 / N
 
-    return PILE, ker_phys_loss, ker_data_loss
+    return PILE, ker_phys_loss, ker_data_loss, eta * L, 0.5*logdet
 
 
+def pile2(W, X, Z, Y_train, Y_grid, model, params, operator, config):
+
+    kernelizer = nt.empirical_kernel_fn(model.apply_fn)
+    kfunc = lambda x, y: kernelizer(x, y, 'nngp', params)
+    kernel = Kernel2(kfunc, operator)
+
+    data_reg = config['train']['reg']['DATA']
+    pinn_reg = config['train']['reg']['PINN']
+
+    N = len(X)
+    M = len(Z)
+    gamma = data_reg / N
+    rho = pinn_reg
+    W = jnp.diag(W)
+
+    # fitting process:
+    #  generate K, H, G, W
+    Kxx = kernel.K(X, X)
+    Hxz = kernel.H(X, Z)
+    G = kernel.G(Z, Z)
+
+    In = jnp.eye(N)
+    O = jnp.zeros((N, M))
+    cov = jnp.block([[Kxx, Hxz], [Hxz.T, G]])
+    noise = jnp.block([[gamma * In, O], [O.T, rho * W]])
+
+    Fhat = model.apply_fn(params, X)
+    Ghat = jax.vmap(operator.apply(lambda _Z: model.apply_fn(params, _Z)[0]), in_axes=(0,))(Z)[:, None]
+    joint = jnp.concatenate((Fhat, Ghat), axis=0)
+
+    eta = jnp.exp(-jnp.log(gamma / (2*jnp.pi)) * (N/(N+M)) + \
+                  -(jnp.sum(jnp.log(jnp.diag(W))) + M*jnp.log(rho / (2*jnp.pi))) * (1/(N+M)))
+    #eta = 0.1
+    #  compute PILE
+    L = gamma * jnp.linalg.norm(Y_train - Fhat) ** 2 + \
+        rho * jnp.linalg.norm(jnp.sqrt(W) @ Ghat) ** 2  + \
+        jnp.sum(joint.flatten() * jnp.linalg.solve(cov, joint).flatten())
+
+    _, logdet = jnp.linalg.slogdet(jnp.eye(N + M) + noise @ cov)
+    PILE = eta * L + 0.5 * logdet
+    RKHS = jnp.sum(joint.flatten() * jnp.linalg.solve(cov, joint).flatten())
+    return PILE, L, logdet, RKHS
+
+
+def pile3(W, X, Z, Y_train, Y_grid, model, params, operator, config):
+
+    kernelizer = nt.empirical_kernel_fn(model.apply_fn)
+    kfunc = lambda x, y: kernelizer(x, y, 'ntk', params)
+    kernel = Kernel2(kfunc, operator)
+
+    data_reg = config['train']['reg']['DATA']
+    pinn_reg = config['train']['reg']['PINN']
+
+    N = len(X)
+    M = len(Z)
+    gamma = data_reg / N
+    rho = pinn_reg
+    W = jnp.diag(W)
+
+    # fitting process:
+    #  generate K, H, G, W
+    Kxx = kernel.K(X, X)
+    Hxz = kernel.H(X, Z)
+    G = kernel.G(Z, Z)
+
+    In = jnp.eye(N)
+    O = jnp.zeros((N, M))
+    cov = jnp.block([[Kxx, Hxz], [Hxz.T, G]])
+    noise = jnp.block([[gamma * In, O], [O.T, rho * W]])
+
+    Fhat = model.apply_fn(params, X)
+    Ghat = jax.vmap(operator.apply(lambda _Z: model.apply_fn(params, _Z)[0]), in_axes=(0,))(Z)[:, None]
+    joint = jnp.concatenate((Fhat, Ghat), axis=0)
+
+    #eta = 0.1
+    #  compute PILE
+    L = gamma * jnp.linalg.norm(Y_train - Fhat) ** 2 + \
+        rho * jnp.linalg.norm(jnp.sqrt(W) @ Ghat) ** 2  + \
+        jnp.sum(joint.flatten() * jnp.linalg.solve(cov, joint).flatten())
+
+    noise_cst = N * 0.5 * jnp.log(2*jnp.pi*(1/gamma)) + 0.5 * (M * jnp.log(2 * jnp.pi / rho) - jnp.sum(jnp.log(jnp.diag(W))))
+    _, logdet = jnp.linalg.slogdet(jnp.eye(N + M) + noise @ cov)
+    PILE = L + 0.5 * logdet + noise_cst
+    RKHS = jnp.sum(joint.flatten() * jnp.linalg.solve(cov, joint).flatten())
+    return PILE, L, logdet, RKHS
 def run(config, key):
     pinn_reg = config['train']['reg']['PINN']
     data_reg = config['train']['reg']['DATA']
@@ -171,7 +257,7 @@ def run(config, key):
         opt_params = optimizer.init(model_params)
 
         train_loss = lambda p: (data_reg / len(X)) * jnp.linalg.norm(model.apply_fn(p, X) - Y_noisy) ** 2 + \
-                               (pinn_reg / len(Z)) * jnp.linalg.norm(jax.vmap(operator.apply(lambda _Z: model.apply_fn(p, _Z)[0]), in_axes=(0,))(Z)) ** 2
+                               (pinn_reg) * jnp.linalg.norm(W**(1/2) @ jax.vmap(operator.apply(lambda _Z: model.apply_fn(p, _Z)[0]), in_axes=(0,))(Z)) ** 2
 
 
         cur_loss = 0
@@ -180,6 +266,16 @@ def run(config, key):
 
         t = tqdm.tqdm(opt_steps)
         for i in range(opt_steps):
+            if i % pile_diagnostics_interval == 0:
+                pile_score = pile3(W, X, Z, Y_noisy, Y_grid, model, model_params, operator, config)
+                pile_scores.append({
+                    "iter": i,
+                    "pile": pile_score[0],
+                    "ker_weighted_loss": pile_score[1],
+                    "log_det": pile_score[2]
+                })
+                print(f"PILE = {pile_score[0]}, L={pile_score[1]}, logdet={pile_score[2]}, RKHS={pile_score[3]}")
+
             if i % gen_diagnostics_interval == 0:
                 gen_error = generalization_error(model, model_params, operator, W, Z, Y_grid)
                 gen_errors.append({
@@ -195,15 +291,6 @@ def run(config, key):
                 print(gen_error)
                 save_diagnostics(diagnostics, config)
 
-            if i % pile_diagnostics_interval == 0:
-                pile_score = pile(W, X, Z, Y_noisy, Y_grid, model, model_params, operator, config)
-                pile_scores.append({
-                    "iter": i,
-                    "ker_gen_error": pile_score[2],
-                    "ker_phys_error": pile_score[1],
-                    "pile": pile_score[0]
-                })
-                print(pile_score[0])
             cur_loss, grad = jax.value_and_grad(train_loss)(model_params)
             updates, opt_params = optimizer.update(grad, opt_params, model_params)
             model_params = optax.apply_updates(model_params, updates)

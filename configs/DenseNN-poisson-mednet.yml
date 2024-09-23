@@ -1,0 +1,27 @@
+name: 'DenseNN-poisson-smallnet-noise'
+dim: 2
+gridpts: 15
+key: 641
+
+train:
+  opt:
+    id: 'adam'
+    steps: 10001
+    lr: 0.001
+  diagnostics:
+    gen_every: 10
+    pile_every: 10000
+  truth:
+      id: 'poisson-exA'
+      noise: 0.01
+  samples:
+    N: 50
+    dist: 'uniform'
+  reg:
+    PINN: [0.005, 0.2, 3]
+    DATA: [1, 1, 1]
+
+model:
+  id: "mlp"
+  dims: [2, 256, 256, 1]
+

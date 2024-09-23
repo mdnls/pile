@@ -10,6 +10,7 @@ import scipy.linalg as scla
 import sklearn as sk
 import sklearn.neighbors
 
+'''
 def gridpts(N, with_weights=False):
     # chebyshev nodes of second kind
     # see "A MATLAB Differentiation Matrix Suite" by Weideman and Reddy
@@ -19,6 +20,15 @@ def gridpts(N, with_weights=False):
         return x[::-1], weights
     else:
         return x[::-1]
+    '''
+
+def gridpts(N, with_weights=False):
+    x = jnp.cos(jnp.pi * (2 * jnp.arange(N) + 1) / (2*N))
+    if with_weights:
+        weights = (2/N) * np.ones_like(x)
+        return x, weights
+    else:
+        return x
 
 def collocate_D(N):
     M = 1

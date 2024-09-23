@@ -155,7 +155,7 @@ class Kernel2:
 
         R = jnp.zeros((len(X), len(Y)))
         for j in range(len(Y)):
-            Rj = vmap(lambda x: idop(x, Y[j]))(X)
+            Rj = jit(vmap(lambda x: idop(x, Y[j])))(X)
             R = R.at[:, j].set(Rj)
 
         return R
@@ -171,7 +171,7 @@ class Kernel2:
         '''
         R = jnp.zeros((len(X), len(Y)))
         for j in range(len(Y)):
-            Rj = vmap(lambda x: opop(x, Y[j]))(X)
+            Rj = jit(vmap(lambda x: opop(x, Y[j])))(X)
             R = R.at[:, j].set(Rj)
         return R
 class Kernel:
@@ -208,8 +208,16 @@ class RBF(Kernel):
     def __init__(self, variance, op):
         kfunc = lambda x, y: jnp.exp(- 0.5 * variance * jnp.sum((x-y)**2))
         super().__init__(kfunc, op)
-        self.variance = variance
-
+        if type(op) == Poisson2D:
+            def hfunc(x, y):
+                sdiff = jnp.linalg.norm(x-y)**2 / variance
+                return (sdiff - 2) * kfunc(x, y) / variance
+            def gfunc(x, y):
+                sdiff = jnp.linalg.norm(x-y)**2 / variance
+                return 2*(4 - sdiff)*kfunc(x, y)/(variance**2) + sdiff * (6 - sdiff) * kfunc(x, y) / (variance**2)
+            self.hfunc = hfunc
+            self.gfunc = gfunc
+            
 class DenseNNGP(Kernel):
     def __init__(self, width, depth, op):
         layers = []
