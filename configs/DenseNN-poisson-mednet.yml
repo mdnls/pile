@@ -1,4 +1,4 @@
-name: 'DenseNN-poisson-smallnet-noise'
+name: 'DenseNN-poisson-mednet-noise'
 dim: 2
 gridpts: 15
 key: 641
@@ -23,5 +23,5 @@ train:
 
 model:
   id: "mlp"
-  dims: [2, 256, 256, 1]
+  dims: [2, 512, 512, 1]
 
