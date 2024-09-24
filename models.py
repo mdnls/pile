@@ -174,6 +174,39 @@ class Kernel2:
             Rj = jit(vmap(lambda x: opop(x, Y[j])))(X)
             R = R.at[:, j].set(Rj)
         return R
+
+class NNetKernel():
+    def __init__(self, nnet, op, params):
+        self.nnet = nnet
+        self.op = op
+        self.params = params
+
+        k_kernelizer = nt.empirical_kernel_fn(nnet.apply_fn)
+        self.K = lambda x, y: k_kernelizer(x, y, 'ntk', params)
+
+        X = jr.normal(key=jr.key(54), shape=(500, 3))
+        h_intermediate_func = lambda params, x: x[:, 0:1]*self.nnet.apply_fn(params, x[:, 1:]) + \
+                                                (1-x[:, 0:1])*vmap(op.apply(lambda x_: self.nnet.apply_fn(params, x_)[0]), in_axes=(0,))(x[:, 1:]).reshape((-1, 1))
+        h_kernelizer = nt.empirical_kernel_fn(h_intermediate_func)
+        self.H = lambda X, Y: h_kernelizer(jnp.concatenate((jnp.ones((len(X), 1)), X), axis=1),
+                                         jnp.concatenate((jnp.zeros((len(Y), 1)), Y), axis=1), 'ntk', params)
+
+        g_intermediate_func = lambda params, x: vmap(op.apply(lambda x_: self.nnet.apply_fn(params, x_)[0]), in_axes=(0,))(x).reshape((-1, 1))
+        g_kernelizer = nt.empirical_kernel_fn(g_intermediate_func)
+        self.G = lambda X, Y: g_kernelizer(X, Y, 'ntk', params)
+
+    def K(self, X, Y):
+        return self.kfunc(X, Y)
+
+    def H(self, X, Y):
+        idop = lambda x, y: self.op.apply(lambda y_: self.K(x, y_))(y)
+
+        R = jnp.zeros((len(X), len(Y)))
+        for j in range(len(Y)):
+            Rj = jit(vmap(lambda x: idop(x, Y[j])))(X)
+            R = R.at[:, j].set(Rj)
+
+        return R
 class Kernel:
     def __init__(self, kfunc, op):
         self.kfunc = kfunc
@@ -217,7 +250,7 @@ class RBF(Kernel):
                 return 2*(4 - sdiff)*kfunc(x, y)/(variance**2) + sdiff * (6 - sdiff) * kfunc(x, y) / (variance**2)
             self.hfunc = hfunc
             self.gfunc = gfunc
-            
+
 class DenseNNGP(Kernel):
     def __init__(self, width, depth, op):
         layers = []

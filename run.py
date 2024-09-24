@@ -1,4 +1,4 @@
-from models import Poisson2D, RBF, Cauchy, ResNNGP, DenseNNGP, NNet, make_mlp, Kernel, Kernel2
+from models import Poisson2D, RBF, Cauchy, ResNNGP, DenseNNGP, NNet, make_mlp, Kernel, Kernel2, NNetKernel
 import jax
 import jax.numpy as jnp
 import jax.random as jr
@@ -197,7 +197,7 @@ def pile3(W, X, Z, Y_train, Y_grid, model, params, operator, config):
 
     kernelizer = nt.empirical_kernel_fn(model.apply_fn)
     kfunc = lambda x, y: kernelizer(x, y, 'ntk', params)
-    kernel = Kernel2(kfunc, operator)
+    kernel = NNetKernel(model, operator, params)
 
     data_reg = config['train']['reg']['DATA']
     pinn_reg = config['train']['reg']['PINN']
@@ -211,8 +211,9 @@ def pile3(W, X, Z, Y_train, Y_grid, model, params, operator, config):
     # fitting process:
     #  generate K, H, G, W
     Kxx = kernel.K(X, X)
-    Hxz = kernel.H(X, Z)
     G = kernel.G(Z, Z)
+    Hxz = kernel.H(X, Z)
+
 
     In = jnp.eye(N)
     O = jnp.zeros((N, M))
@@ -220,7 +221,7 @@ def pile3(W, X, Z, Y_train, Y_grid, model, params, operator, config):
     noise = jnp.block([[gamma * In, O], [O.T, rho * W]])
 
     Fhat = model.apply_fn(params, X)
-    Ghat = jax.vmap(operator.apply(lambda _Z: model.apply_fn(params, _Z)[0]), in_axes=(0,))(Z)[:, None]
+    Ghat = jax.vmap(operator.apply(lambda _Z: model.apply_fn(params, _Z)[0]), in_axes=(0,))(Z).reshape((-1, 1))
     joint = jnp.concatenate((Fhat, Ghat), axis=0)
 
     #eta = 0.1
