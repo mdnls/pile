@@ -24,7 +24,7 @@ class Poisson2D():
 
         grid = pde.CartesianGrid([[-1, 1], [-1, 1]], N_grid_fem)
         if forcing_expr is None:
-            forcing_expr = "1 + sin(6.28*x) * sin(6.28*y)"
+            forcing_expr = "10*(1 + sin(6.28*x) * sin(6.28*y))"
 
         self.forcing = pde.ScalarField.from_expression(grid, forcing_expr)
 
@@ -184,7 +184,6 @@ class NNetKernel():
         k_kernelizer = nt.empirical_kernel_fn(nnet.apply_fn)
         self.K = lambda x, y: k_kernelizer(x, y, 'ntk', params)
 
-        X = jr.normal(key=jr.key(54), shape=(500, 3))
         h_intermediate_func = lambda params, x: x[:, 0:1]*self.nnet.apply_fn(params, x[:, 1:]) + \
                                                 (1-x[:, 0:1])*vmap(op.apply(lambda x_: self.nnet.apply_fn(params, x_)[0]), in_axes=(0,))(x[:, 1:]).reshape((-1, 1))
         h_kernelizer = nt.empirical_kernel_fn(h_intermediate_func)
@@ -237,17 +236,18 @@ class Cauchy(Kernel):
         kfunc = lambda x, y: (2 * jnp.pi)**(-1) * jnp.log(jnp.sum((x-y)**2/variance+eps)**(0.5))
         super().__init__(kfunc, op)
         self.variance = variance
+
 class RBF(Kernel):
-    def __init__(self, variance, op):
-        kfunc = lambda x, y: jnp.exp(- 0.5 * variance * jnp.sum((x-y)**2))
+    def __init__(self, bandwidth, op):
+        kfunc = lambda x, y: jnp.exp(- 0.5 * jnp.sum((x-y)**2 / bandwidth**2))
         super().__init__(kfunc, op)
         if type(op) == Poisson2D:
             def hfunc(x, y):
-                sdiff = jnp.linalg.norm(x-y)**2 / variance
-                return (sdiff - 2) * kfunc(x, y) / variance
+                sdiff = jnp.linalg.norm(x-y)**2 / bandwidth**2
+                return (sdiff - 2) * kfunc(x, y) / bandwidth**2
             def gfunc(x, y):
-                sdiff = jnp.linalg.norm(x-y)**2 / variance
-                return 2*(4 - sdiff)*kfunc(x, y)/(variance**2) + sdiff * (6 - sdiff) * kfunc(x, y) / (variance**2)
+                sdiff = jnp.linalg.norm(x-y)**2 / bandwidth**2
+                return ((sdiff - 2)**2 - 4 * sdiff + 4) * kfunc(x, y) / bandwidth**4
             self.hfunc = hfunc
             self.gfunc = gfunc
 
@@ -288,6 +288,8 @@ def make_mlp(dims, key):
     parameters = init_fn(key, input_shape=(dims[0],))[1]
     return NNet(apply_fn=apply_fn, key=key), parameters
 
+def make_rbf(bandwidth, operator):
+    return RBF(bandwidth=bandwidth, op=operator)
 
 if __name__ == "__main__":
     import matplotlib.pyplot as plt

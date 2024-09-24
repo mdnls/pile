@@ -1,4 +1,4 @@
-name: 'DenseNN-poisson-smallnet'
+name: 'DenseNNs-poisson'
 dim: 2
 gridpts: 30
 key: 641
@@ -6,22 +6,22 @@ key: 641
 train:
   opt:
     id: 'adam'
-    steps: 10000
+    steps: 10001
     lr: 0.0001
   diagnostics:
-    gen_every: 10
+    gen_every: 100
     pile_every: 1000
   truth:
       id: 'poisson-exA'
-      noise: 0.01
+      noise: 0.5
   samples:
-    N: 1000
+    N: 50
     dist: 'uniform'
   reg:
-    PINN: [0.01, 10000, 12]
-    DATA: [0.01, 10, 12]
+    PINN: [1, 1, 1]
+    DATA: [0.4, 0.6, 5]
 
 model:
   id: "mlp"
-  dims: [2, 256, 256, 1]
+  dims: [2, 32, 32, 32, 1]
 

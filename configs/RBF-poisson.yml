@@ -1,0 +1,22 @@
+name: 'RBF-poisson-mega'
+dim: 2
+gridpts: 30
+key: 641
+
+train:
+  opt:
+    steps: 0
+  truth:
+      id: 'poisson-exA'
+      noise: 0.5
+  samples:
+    N: 100
+    dist: 'uniform'
+  reg:
+    PINN: [0.01, 10, 100]
+    DATA: [0.01, 10, 100]
+
+model:
+  id: "RBF"
+  bandwidth: 0.5
+
