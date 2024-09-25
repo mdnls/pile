@@ -1,4 +1,4 @@
-name: 'DenseNNs-poisson'
+name: 'MLP-lg-no'
 dim: 2
 gridpts: 30
 key: 641
@@ -13,15 +13,16 @@ train:
     pile_every: 1000
   truth:
       id: 'poisson-exA'
-      noise: 0.5
+      noise: 1
   samples:
-    N: 50
+    N: 200
     dist: 'uniform'
+    with_boundary: True
   reg:
     PINN: [1, 1, 1]
-    DATA: [0.4, 0.6, 5]
+    DATA: [0.005, 0.15, 5]
 
 model:
   id: "mlp"
-  dims: [2, 32, 32, 32, 1]
+  dims: [2, 128, 128, 1]
 

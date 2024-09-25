@@ -1,4 +1,4 @@
-name: 'RBF-poisson-mega'
+name: 'RBF-sm-no'
 dim: 2
 gridpts: 30
 key: 641
@@ -8,15 +8,15 @@ train:
     steps: 0
   truth:
       id: 'poisson-exA'
-      noise: 0.5
+      noise: 1
   samples:
-    N: 100
+    N: 200
     dist: 'uniform'
   reg:
-    PINN: [0.01, 10, 100]
-    DATA: [0.01, 10, 100]
+    PINN: [0.01, 10, 5]
+    DATA: [0.01, 10, 5]
 
 model:
   id: "RBF"
-  bandwidth: 0.5
+  bandwidth: 0.025
 

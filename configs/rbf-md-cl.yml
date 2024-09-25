@@ -1,4 +1,4 @@
-name: 'RBF-poisson-overfit'
+name: 'RBF-md-cl'
 dim: 2
 gridpts: 30
 key: 641
@@ -8,15 +8,15 @@ train:
     steps: 0
   truth:
       id: 'poisson-exA'
-      noise: 0.5
+      noise: 0.01
   samples:
-    N: 100
+    N: 200
     dist: 'uniform'
   reg:
-    PINN: [0.01, 10, 10]
-    DATA: [0.01, 10, 10]
+    PINN: [0.01, 10, 5]
+    DATA: [0.01, 10, 5]
 
 model:
   id: "RBF"
-  bandwidth: 0.001
+  bandwidth: 0.25
 

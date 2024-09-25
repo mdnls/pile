@@ -1,0 +1,28 @@
+name: 'MLP-md-cl'
+dim: 2
+gridpts: 30
+key: 641
+
+train:
+  opt:
+    id: 'adam'
+    steps: 10001
+    lr: 0.0001
+  diagnostics:
+    gen_every: 100
+    pile_every: 1000
+  truth:
+      id: 'poisson-exA'
+      noise: 0.01
+  samples:
+    N: 200
+    dist: 'uniform'
+    with_boundary: True
+  reg:
+    PINN: [1, 1, 1]
+    DATA: [0.005, 0.15, 5]
+
+model:
+  id: "mlp"
+  dims: [2, 64, 64, 1]
+
