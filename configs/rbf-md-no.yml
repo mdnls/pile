@@ -13,8 +13,8 @@ train:
     N: 200
     dist: 'uniform'
   reg:
-    PINN: [0.01, 10, 5]
-    DATA: [0.01, 10, 5]
+    PINN: [0.5, 2, 5]
+    DATA: [0.5, 2, 5]
 
 model:
   id: "RBF"

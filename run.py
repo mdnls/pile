@@ -187,8 +187,7 @@ def run(config, key):
 
     opt_steps = config['train']['opt']['steps']
 
-    with_bdy = config['train']['samples']['with_boundary']
-    if with_bdy:
+    if 'with-boundary' in config['train']['samples'].keys() and config['train']['samples']:
         # TODO: technically, the boundary array doesn't contain the actual boundary. IE it contains points (1-eps, ...), (-1+eps, ...)
         bdy = jnp.concatenate((dim_grid[0, :], dim_grid[-1, :], dim_grid[:, 0], dim_grid[:, -1]), axis=0)
         X = jnp.concatenate((X, bdy), axis=0)
@@ -204,7 +203,7 @@ def run(config, key):
         opt_params = optimizer.init(model_params)
 
         train_loss = lambda p: (data_reg / len(X)) * jnp.linalg.norm(model.apply_fn(p, X) - Y_noisy) ** 2 + \
-                               (pinn_reg) * jnp.linalg.norm(W**(1/2) @ jax.vmap(operator.apply(lambda _Z: model.apply_fn(p, _Z)[0]), in_axes=(0,))(Z)) ** 2
+                               pinn_reg * jnp.linalg.norm(W**(1/2) * jax.vmap(operator.apply(lambda _Z: model.apply_fn(p, _Z)[0]), in_axes=(0,))(Z).flatten()) ** 2
 
 
         gen_errors = []

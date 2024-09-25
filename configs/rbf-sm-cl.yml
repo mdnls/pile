@@ -10,11 +10,11 @@ train:
       id: 'poisson-exA'
       noise: 0.01
   samples:
-    N: 200
+    N: 1000
     dist: 'uniform'
   reg:
-    PINN: [0.01, 10, 5]
-    DATA: [0.01, 10, 5]
+    PINN: [1, 1, 1]
+    DATA: [8, 12, 5]
 
 model:
   id: "RBF"

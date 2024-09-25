@@ -7,7 +7,7 @@ train:
   opt:
     id: 'adam'
     steps: 10001
-    lr: 0.0001
+    lr: 0.001
   diagnostics:
     gen_every: 100
     pile_every: 1000
@@ -15,12 +15,13 @@ train:
       id: 'poisson-exA'
       noise: 0.01
   samples:
-    N: 200
+    N: 1000
     dist: 'uniform'
     with_boundary: True
   reg:
     PINN: [1, 1, 1]
-    DATA: [0.005, 0.15, 5]
+    DATA: [8, 12, 1]
+
 
 model:
   id: "mlp"
