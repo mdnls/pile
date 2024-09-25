@@ -73,16 +73,14 @@ def save_diagnostics(diagnostics, config):
 
 def generalization_error(model, params, operator, W, Z, Y_grid):
 
-    model_gen_error = jnp.linalg.norm(jnp.sqrt(W) @ (model.apply_fn(params, Z) - Y_grid)) ** 2 / len(Z)
+    model_gen_error = jnp.linalg.norm(jnp.sqrt(W) * (model.apply_fn(params, Z) - Y_grid).flatten()) ** 2
     model_phys_error = jnp.linalg.norm(
-        jnp.sqrt(W) @ jax.vmap(operator.apply(lambda _Z: model.apply_fn(params, _Z)[0]), in_axes=(0,))(Z)) ** 2 / len(Z)
+        jnp.sqrt(W) * jax.vmap(operator.apply(lambda _Z: model.apply_fn(params, _Z)[0]), in_axes=(0,))(Z).flatten()) ** 2
 
     return (model_gen_error, model_phys_error)
 
 def pile(W, X, Z, Y_train, Y_grid, model, params, operator, config):
 
-    kernelizer = nt.empirical_kernel_fn(model.apply_fn)
-    kfunc = lambda x, y: kernelizer(x, y, 'ntk', params)
     kernel = NNetKernel(model, operator, params)
 
     data_reg = config['train']['reg']['DATA']
@@ -110,7 +108,6 @@ def pile(W, X, Z, Y_train, Y_grid, model, params, operator, config):
     Ghat = jax.vmap(operator.apply(lambda _Z: model.apply_fn(params, _Z)[0]), in_axes=(0,))(Z).reshape((-1, 1))
     joint = jnp.concatenate((Fhat, Ghat), axis=0)
 
-    #eta = 0.1
     #  compute PILE
     L = gamma * jnp.linalg.norm(Y_train - Fhat) ** 2 + \
         rho * jnp.linalg.norm(jnp.sqrt(W) @ Ghat) ** 2
@@ -165,8 +162,8 @@ def linear_diagnostics(W, X, Z, Y_train, Y_grid, kernel, config):
     PILE = L + 0.5 * logdet + noise_cst
     RKHS = jnp.sum(joint.flatten() * jnp.linalg.solve(cov[:N+M, :N+M], joint).flatten())
 
-    PINN_loss = jnp.linalg.norm(W @ Ghat)**2/M
-    DATA_loss = jnp.linalg.norm(jnp.sqrt(W)@(Fhat_grid - Y_grid))**2/N
+    PINN_loss = jnp.linalg.norm(jnp.sqrt(W)@Ghat)**2 # BIG ERROR ALERT: in RBF-Poisson-Mega, PINN loss is divided by 900
+    DATA_loss = jnp.linalg.norm(jnp.sqrt(W)@(Fhat_grid - Y_grid))**2 # AND DATA_loss is divided by 100
 
     return PILE, L, logdet, RKHS, PINN_loss, DATA_loss
 
@@ -175,6 +172,7 @@ def linear_diagnostics(W, X, Z, Y_train, Y_grid, kernel, config):
 def run(config, key):
     pinn_reg = config['train']['reg']['PINN']
     data_reg = config['train']['reg']['DATA']
+
 
     operator = retrieve_op(config)
 
@@ -189,6 +187,12 @@ def run(config, key):
 
     opt_steps = config['train']['opt']['steps']
 
+    with_bdy = config['train']['samples']['with_boundary']
+    if with_bdy:
+        # TODO: technically, the boundary array doesn't contain the actual boundary. IE it contains points (1-eps, ...), (-1+eps, ...)
+        bdy = jnp.concatenate((dim_grid[0, :], dim_grid[-1, :], dim_grid[:, 0], dim_grid[:, -1]), axis=0)
+        X = jnp.concatenate((X, bdy), axis=0)
+        Y_noisy = jnp.concatenate((Y_noisy, jnp.zeros((len(bdy), 1))), axis=0)
 
     if opt_steps > 0:
         gen_diagnostics_interval = config['train']['diagnostics']['gen_every']
