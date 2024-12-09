@@ -19,8 +19,8 @@ train:
     dist: 'uniform'
     with_boundary: True
   reg:
-    PINN: [1, 1, 1]
-    DATA: [8, 12, 5]
+    PINN: [800, 800, 1]
+    DATA: [800, 1200, 5]
 
 model:
   id: "mlp"

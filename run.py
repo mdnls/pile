@@ -71,101 +71,128 @@ def save_diagnostics(diagnostics, config):
     with open(f"expts/{config['name']}/{d_name}/diagnostics.pkl", "wb+") as f_out:
         f_out.write(pickle.dumps(diagnostics))
 
-def generalization_error(model, params, operator, W, Z, Y_grid):
-
-    model_gen_error = jnp.linalg.norm(jnp.sqrt(W) * (model.apply_fn(params, Z) - Y_grid).flatten()) ** 2
-    model_phys_error = jnp.linalg.norm(
-        jnp.sqrt(W) * jax.vmap(operator.apply(lambda _Z: model.apply_fn(params, _Z)[0]), in_axes=(0,))(Z).flatten()) ** 2
-
+def generalization_error(quad_grid, quad_weights, R_grid, Y_grid, model, model_diff_grid, params):
+    data_residual = model.apply_fn(params, quad_grid) - Y_grid
+    diff_residual = model_diff_grid(params) - R_grid
+    model_gen_error = jnp.linalg.norm(jnp.sqrt(quad_weights) * data_residual.flatten()) ** 2
+    model_phys_error = jnp.linalg.norm(jnp.sqrt(quad_weights) * diff_residual.flatten()) ** 2
     return (model_gen_error, model_phys_error)
 
-def pile(W, X, Z, Y_train, Y_grid, model, params, operator, config):
-
+def pile(quad_grid, quad_weights, X_sample, Y_sample_noisy, R_grid, model, model_diff_grid, params, operator, config):
     kernel = NNetKernel(model, operator, params)
 
     data_reg = config['train']['reg']['DATA']
     pinn_reg = config['train']['reg']['PINN']
 
-    N = len(X)
-    M = len(Z)
-    gamma = data_reg / N
+    N = len(X_sample)
+    M = len(quad_grid)
+
+    gma = data_reg
     rho = pinn_reg
-    W = jnp.diag(W)
 
     # fitting process:
     #  generate K, H, G, W
-    Kxx = kernel.K(X, X)
-    G = kernel.G(Z, Z)
-    Hxz = kernel.H(X, Z)
+    Kxx = kernel.K(X_sample, X_sample)
+    G = kernel.G(quad_grid, quad_grid)
+    Hxz = kernel.H(X_sample, quad_grid)
 
 
-    In = jnp.eye(N)
-    O = jnp.zeros((N, M))
     cov = jnp.block([[Kxx, Hxz], [Hxz.T, G]])
-    noise = jnp.block([[gamma * In, O], [O.T, rho * W]])
+    noise = jnp.concatenate((gma * (1/N) * jnp.ones((N,)), rho * quad_weights))
 
-    Fhat = model.apply_fn(params, X)
-    Ghat = jax.vmap(operator.apply(lambda _Z: model.apply_fn(params, _Z)[0]), in_axes=(0,))(Z).reshape((-1, 1))
+    Fhat = model.apply_fn(params, X_sample)
+    Ghat = model_diff_grid(params)
     joint = jnp.concatenate((Fhat, Ghat), axis=0)
 
     #  compute PILE
-    L = gamma * jnp.linalg.norm(Y_train - Fhat) ** 2 + \
-        rho * jnp.linalg.norm(jnp.sqrt(W) @ Ghat) ** 2
-    RKHS = jnp.sum(joint.flatten() * jnp.linalg.solve(cov, joint).flatten())
+    # sanity check: L should be training loss
+    L = gma * (1/N) * jnp.linalg.norm(Y_sample_noisy - Fhat) ** 2 + \
+        rho * jnp.linalg.norm(jnp.sqrt(quad_weights) * (R_grid - Ghat)) ** 2
+    RKHS = jnp.sum(joint.flatten() * jnp.linalg.lstsq(cov, joint.flatten())[0].flatten())
 
-    noise_cst = N * 0.5 * jnp.log(2*jnp.pi*(1/gamma)) + 0.5 * (M * jnp.log(2 * jnp.pi / rho) - jnp.sum(jnp.log(jnp.diag(W))))
-    _, logdet = jnp.linalg.slogdet(jnp.eye(N + M) + noise @ cov)
+    noise_cst = N * 0.5 * jnp.log(2*jnp.pi*(N/gma)) + 0.5 * (M * jnp.log(2 * jnp.pi / rho) - jnp.sum(jnp.log(quad_weights)))
+    _, logdet = jnp.linalg.slogdet(jnp.eye(N + M) + noise.reshape((-1, 1))*cov)
     PILE = L + RKHS + 0.5 * logdet + noise_cst
-    RKHS = jnp.sum(joint.flatten() * jnp.linalg.solve(cov, joint).flatten())
     return PILE, L, RKHS, logdet, noise_cst
 
-def linear_diagnostics(W, X, Z, Y_train, Y_grid, kernel, config):
+def linear_diagnostics(quad_grid, quad_weights, X_sample, Y_sample_noisy, Y_grid, R_grid, kernel, config):
     data_reg = config['train']['reg']['DATA']
     pinn_reg = config['train']['reg']['PINN']
 
-    N = len(X)
-    M = len(Z)
-    gamma = data_reg / N
+    N = len(X_sample)
+    M = len(quad_grid)
+    gma = data_reg
     rho = pinn_reg
-    W = jnp.diag(W)
 
     # fitting process:
     #  generate K, H, G, W
-    Kxx = kernel.K(X, X)
-    Kzz = kernel.K(Z, Z)
-    Kxz = kernel.K(X, Z)
-    Hxz = kernel.H(X, Z)
-    Hzz = kernel.H(Z, Z)
-    G = kernel.G(Z, Z)
 
-    cov = jnp.block([[Kxx, Hxz, Kxz], [Hxz.T, G, Hzz.T], [Kxz.T, Hzz, Kzz]])
-    In = jnp.eye(N)
-    O = jnp.zeros((N, M))
-    Om = jnp.zeros((M, M))
-    noise = jnp.block([[gamma*In, O, O], [O.T, rho*W, Om], [O.T, Om, Om]])
-    Y_ = jnp.concatenate((Y_train, jnp.zeros((2*M, 1))), axis=0)
+    Kxx = kernel.K(X_sample, X_sample)
+    Hxz = kernel.H(X_sample, quad_grid)
+    Gzz = kernel.G(quad_grid, quad_grid)
+    Kxz = kernel.K(X_sample, quad_grid)
+    Hzz = kernel.H(quad_grid, quad_grid)
+    Kzz = kernel.K(quad_grid, quad_grid)
 
-    Yhat = jnp.linalg.solve(jnp.eye(N+2*M) + cov @ noise, cov @ noise @ Y_)
-    Fhat = Yhat[:N]
-    Ghat = Yhat[N:N+M]
-    Fhat_grid = Yhat[N+M:]
+
+    cov_obs = jnp.block([[Kxx + (gma/N) * jnp.eye(N), Hxz], [Hxz.T, Gzz + rho * jnp.diag(quad_weights)]])
+    cov_prior = jnp.block([[Kxx, Hxz], [Hxz.T, Gzz]])
+    cov_cross = jnp.block([[Kxx, Hxz, Kxz], [Hxz.T, Gzz, Hzz.T]]).T
+    obs_block = jnp.concatenate([Y_sample_noisy, R_grid], axis=0)
+    posterior_mean = cov_cross @ jnp.linalg.lstsq(cov_obs, obs_block)[0]
+
+    Fhat = posterior_mean[:N]
+    Ghat = posterior_mean[N:N+M]
+    Fhat_grid = posterior_mean[N+M:]
 
     joint = jnp.concatenate((Fhat, Ghat), axis=0)
 
-    L = gamma * jnp.linalg.norm(Y_train - Fhat) ** 2 + \
-        rho * jnp.linalg.norm(jnp.sqrt(W) @ Ghat) ** 2 + \
-        jnp.sum(joint.flatten() * jnp.linalg.solve(cov[:N+M, :N+M], joint).flatten())
+    RKHS = jnp.sum(joint.flatten() * jnp.linalg.lstsq(cov_prior, joint)[0].flatten())
+    train_data_loss = gma * (1/N) * jnp.linalg.norm(Y_sample_noisy - Fhat)**2
+    train_phys_loss = rho * jnp.linalg.norm(jnp.sqrt(quad_weights)*(Ghat - R_grid)) ** 2
 
-    noise_cst = N * 0.5 * jnp.log(2 * jnp.pi * (1 / gamma)) + 0.5 * (
-                M * jnp.log(2 * jnp.pi / rho) - jnp.sum(jnp.log(jnp.diag(W))))
-    _, logdet = jnp.linalg.slogdet(jnp.eye(N + M) + noise[:N+M, :N+M] @ cov[:N+M,:N+M])
+    L = train_data_loss + train_phys_loss + RKHS
+
+    noise_cst = N * 0.5 * jnp.log(2 * jnp.pi * (N / gma)) + 0.5 * (
+                M * jnp.log(2 * jnp.pi / rho) - jnp.sum(jnp.log(quad_weights)))
+
+    _, logdet = jnp.linalg.slogdet(jnp.eye(N + M) + \
+                                   jnp.block([[(gma/N) * Kxx, (gma/N) * Hxz], [rho * quad_weights[:, None] * Hxz.T, rho * quad_weights[:, None] * Gzz]]))
     PILE = L + 0.5 * logdet + noise_cst
-    RKHS = jnp.sum(joint.flatten() * jnp.linalg.solve(cov[:N+M, :N+M], joint).flatten())
 
-    PINN_loss = jnp.linalg.norm(jnp.sqrt(W)@Ghat)**2 # BIG ERROR ALERT: in RBF-Poisson-Mega, PINN loss is divided by 900
-    DATA_loss = jnp.linalg.norm(jnp.sqrt(W)@(Fhat_grid - Y_grid))**2 # AND DATA_loss is divided by 100
+    phys_gen = jnp.linalg.norm(jnp.sqrt(quad_weights)*(Ghat - R_grid))**2
+    data_gen = jnp.linalg.norm(jnp.sqrt(quad_weights)*(Fhat_grid - Y_grid))**2
 
-    return PILE, L, logdet, RKHS, PINN_loss, DATA_loss
+    if True:
+        import matplotlib.pyplot as plt
+        import numpy as np
+        plt.suptitle(f'g={gma}, r={rho}')
+        plt.subplot(3, 2, 1)
+        plt.title('Fhat')
+        plt.imshow(np.array(Fhat_grid).reshape((30, 30)))
+        plt.colorbar()
+        plt.subplot(3, 2, 2)
+        plt.title('Ghat')
+        plt.imshow(np.array(Ghat).reshape((30, 30)))
+        plt.colorbar()
+        plt.subplot(3, 2, 3)
+        plt.title('Fhat - Y_grid')
+        plt.imshow(np.array(Fhat_grid - Y_grid).reshape((30, 30)))
+        plt.colorbar()
+        plt.subplot(3, 2, 4)
+        plt.title('Ghat - R_grid')
+        plt.imshow(np.array(Ghat - R_grid).reshape((30, 30)))
+        plt.colorbar()
+        plt.subplot(3, 2, 5)
+        plt.title('Y_grid')
+        plt.imshow(np.array(Y_grid).reshape((30, 30)))
+        plt.colorbar()
+        plt.subplot(3, 2, 6)
+        plt.title('R_grid')
+        plt.imshow(np.array(R_grid).reshape((30, 30)))
+        plt.colorbar()
+        plt.show()
+    return PILE, L, logdet, RKHS, data_gen, phys_gen
 
 
 
@@ -173,25 +200,27 @@ def run(config, key):
     pinn_reg = config['train']['reg']['PINN']
     data_reg = config['train']['reg']['DATA']
 
-
     operator = retrieve_op(config)
 
-    X = retrieve_samples(config, key)
+    X_sample = retrieve_samples(config, key)
     _, _, dim_grid, W = retrieve_grid(config)
     Z = dim_grid.reshape((-1, 2))
 
     noise_var = config['train']['truth']['noise']
-    Y_true = operator.eval_solution(X)
-    Y_noisy = Y_true + jnp.sqrt(noise_var) * jr.normal(key, shape=(len(X), 1))
+
+
+    Y_sample = operator.eval_solution(X_sample)
+    Y_sample_noisy = Y_sample + jnp.sqrt(noise_var) * jr.normal(key, shape=(len(X_sample), 1))
     Y_grid = operator.eval_solution(Z)
+    R_grid = operator.eval_forcing(Z)
 
     opt_steps = config['train']['opt']['steps']
 
     if 'with-boundary' in config['train']['samples'].keys() and config['train']['samples']:
-        # TODO: technically, the boundary array doesn't contain the actual boundary. IE it contains points (1-eps, ...), (-1+eps, ...)
+        # TODO: technically, the boundary array doesn't contain the actual boundary, it contains points (1-eps, ...), (-1+eps, ...)
         bdy = jnp.concatenate((dim_grid[0, :], dim_grid[-1, :], dim_grid[:, 0], dim_grid[:, -1]), axis=0)
-        X = jnp.concatenate((X, bdy), axis=0)
-        Y_noisy = jnp.concatenate((Y_noisy, jnp.zeros((len(bdy), 1))), axis=0)
+        X_sample = jnp.concatenate((X_sample, bdy), axis=0)
+        Y_sample_noisy = jnp.concatenate((Y_sample_noisy, jnp.zeros((len(bdy), 1))), axis=0)
 
     if opt_steps > 0:
         gen_diagnostics_interval = config['train']['diagnostics']['gen_every']
@@ -199,11 +228,19 @@ def run(config, key):
 
         optimizer = retrieve_optimizer(config)
         model, model_params = retrieve_model(config, key)
+        model_diff_grid = lambda params: jax.vmap(operator.apply(lambda _Z: model.apply_fn(params, _Z)[0]), in_axes=(0,))(Z).reshape((-1, 1))
 
         opt_params = optimizer.init(model_params)
 
-        train_loss = lambda p: (data_reg / len(X)) * jnp.linalg.norm(model.apply_fn(p, X) - Y_noisy) ** 2 + \
-                               pinn_reg * jnp.linalg.norm(W**(1/2) * jax.vmap(operator.apply(lambda _Z: model.apply_fn(p, _Z)[0]), in_axes=(0,))(Z).flatten()) ** 2
+
+        interp_train_loss = lambda t: \
+            lambda p: data_reg * (1/len(X_sample)) * jnp.linalg.norm(model.apply_fn(p, X_sample) - Y_sample_noisy) ** 2 + \
+                      t * pinn_reg * jnp.linalg.norm(W**(1/2) * (model_diff_grid(p) - R_grid))** 2
+
+        hybrid_train_loss = lambda p: data_reg * (1/len(X_sample)) * jnp.linalg.norm(model.apply_fn(p, X_sample) - Y_sample_noisy) ** 2 + \
+                               pinn_reg * jnp.linalg.norm(W**(1/2) * (model_diff_grid(p) - R_grid))** 2
+
+        data_train_loss = lambda p: data_reg * (1/len(X_sample)) * jnp.linalg.norm(model.apply_fn(p, X_sample) - Y_sample_noisy) ** 2
 
 
         gen_errors = []
@@ -213,29 +250,34 @@ def run(config, key):
         t = tqdm.tqdm(opt_steps)
         for i in range(opt_steps):
             do_save = False
+
             if i % pile_diagnostics_interval == 0:
                 do_save = True
-                pile_score = pile(W, X, Z, Y_noisy, Y_grid, model, model_params, operator, config)
-                pile_scores.append({
-                    "iter": i,
-                    "pile": pile_score[0],
-                    "train_loss": pile_score[1],
-                    "rkhs": pile_score[2],
-                    "log_det": pile_score[3],
-                    "noise_cst": pile_score[4]
-                })
-                print(f"PILE = {pile_score[0]}, L={pile_score[1]}, logdet={pile_score[2]}, RKHS={pile_score[3]}")
+                pile_score = pile(quad_grid=Z,
+                                  quad_weights=W,
+                                  X_sample=X_sample,
+                                  Y_sample_noisy=Y_sample_noisy,
+                                  R_grid=R_grid,
+                                  model=model,
+                                  model_diff_grid=model_diff_grid,
+                                  params=model_params,
+                                  operator=operator,
+                                  config=config)
 
+                pile_scores.append(pile_score)
+                print(f"PILE = {pile_score[0]}, L={pile_score[1]}, logdet={pile_score[2]}, RKHS={pile_score[3]}")
 
             if i % gen_diagnostics_interval == 0:
                 do_save = True
-                gen_error = generalization_error(model, model_params, operator, W, Z, Y_grid)
-                gen_errors.append({
-                    "iter": i,
-                    "model_gen_error": gen_error[0],
-                    "model_phys_error": gen_error[1]
-                })
-                print(gen_error)
+                gen_error = generalization_error(quad_grid=Z,
+                                                 quad_weights=W,
+                                                 R_grid=R_grid,
+                                                 Y_grid=Y_grid,
+                                                 model=model,
+                                                 model_diff_grid=model_diff_grid,
+                                                 params=model_params)
+                gen_errors.append(gen_error)
+                print(f"Generalization errors: data = {gen_error[0]}, phys = {gen_error[1]}")
 
             if do_save:
                 diagnostics = {
@@ -244,15 +286,40 @@ def run(config, key):
                 }
                 save_diagnostics(diagnostics, config)
 
-            cur_loss, grad = jax.value_and_grad(train_loss)(model_params)
-            updates, opt_params = optimizer.update(grad, opt_params, model_params)
-            model_params = optax.apply_updates(model_params, updates)
-            t.set_description(f'Training loss: {cur_loss:.8f}')
-            t.update(1)
+            if i < config['train']['opt']['n_data_pretrain']:
+                cur_loss, grad = jax.value_and_grad(data_train_loss)(model_params)
+                updates, opt_params = optimizer.update(grad, opt_params, model_params)
+                model_params = optax.apply_updates(model_params, updates)
+                t.set_description(f'Training loss: {cur_loss:.8f}')
+                t.update(1)
+            elif i < config['train']['opt']['n_data_pretrain'] + config['train']['opt']['n_interp_train']:
+                inc = i - config['train']['opt']['n_data_pretrain']
+                tot = (config['train']['opt']['n_data_pretrain'] + config['train']['opt']['n_interp_train'])
+                theta = inc / tot
+                cur_loss, grad = jax.value_and_grad(interp_train_loss(theta))(model_params)
+                updates, opt_params = optimizer.update(grad, opt_params, model_params)
+                model_params = optax.apply_updates(model_params, updates)
+                t.set_description(f'Training loss: {cur_loss:.8f}')
+                t.update(1)
+            else:
+                # might be worth re-initializing optimizer parameters, but it could have
+                # the unintended side effect of resetting momentums and messing things up
+                cur_loss, grad = jax.value_and_grad(hybrid_train_loss)(model_params)
+                updates, opt_params = optimizer.update(grad, opt_params, model_params)
+                model_params = optax.apply_updates(model_params, updates)
+                t.set_description(f'Training loss: {cur_loss:.8f}')
+                t.update(1)
 
     if opt_steps == 0:
         kernel = retrieve_model(config, key)
-        PILE, L, logdet, RKHS, PINN_loss, DATA_loss = linear_diagnostics(W, X, Z, Y_noisy, Y_grid, kernel, config)
+        PILE, L, logdet, RKHS, PINN_loss, DATA_loss = linear_diagnostics(quad_grid=Z,
+                                                                         quad_weights=W,
+                                                                         X_sample=X_sample,
+                                                                         Y_sample_noisy=Y_sample_noisy,
+                                                                         Y_grid=Y_grid,
+                                                                         R_grid=R_grid,
+                                                                         kernel=kernel,
+                                                                         config=config)
         pile_score_dict = [{
             "iter": 0,
             "pile": PILE,

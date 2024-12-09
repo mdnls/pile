@@ -4,7 +4,7 @@ import neural_tangents as nt
 from jax import grad, jit, vmap, jacfwd
 import cheb
 import scipy as sp
-from scipy import fft, sparse
+from scipy import fft, sparse, interpolate
 import numpy as np
 import pde
 from neural_tangents import stax
@@ -15,7 +15,7 @@ def make_diffusion_field(n_spikes, dim, key):
     return lambda x: jnp.sin(2 * jnp.pi * jnp.sum(spikes @ x.reshape((dim, -1)), axis=0))
 
 class Poisson2D():
-    def __init__(self, forcing_expr=None, N_grid_cheb=30, N_grid_fem=64):
+    def __init__(self, forcing_expr=None, N_grid_fem=200):
         '''
         Forcing must be a pde.ScalarField
         :param forcing:
@@ -23,23 +23,38 @@ class Poisson2D():
         '''
 
         grid = pde.CartesianGrid([[-1, 1], [-1, 1]], N_grid_fem)
+
         if forcing_expr is None:
             forcing_expr = "10*(1 + sin(6.28*x) * sin(6.28*y))"
+        self.forcing_expr = forcing_expr
 
         self.forcing = pde.ScalarField.from_expression(grid, forcing_expr)
 
         bc = [{"value":0}, {"value": 0}]
         result = pde.solve_poisson_equation(self.forcing, [bc, bc])
-        self._sol = result
 
-        cheb_interp = cheb.ChebInterpolator2D(grid=result.grid.cell_coords.reshape((N_grid_fem**2, 2)), vals=result.data.flatten(), N_grid=N_grid_cheb)
-        self.sol = cheb_interp
+        grid = result.grid.cell_coords.reshape((N_grid_fem**2, 2))
+        sol = result.data.flatten()
+
+        self._sol = sol
+        self._sol_interpolator = sp.interpolate.NearestNDInterpolator(x=grid, y=sol)
+        #self._sol = result
+        #cheb_interp = cheb.ChebInterpolator2D(grid=result.grid.cell_coords.reshape((N_grid_fem**2, 2)), vals=result.data.flatten(), N_grid=N_grid_cheb)
+        #self.sol = cheb_interp
 
     def apply(self, func):
         return lambda x_: jnp.trace(jacfwd(lambda x: grad(func)(x))(x_))
 
     def eval_solution(self, X):
-        return self.sol.eval(X).reshape((-1, 1))
+        #return self.sol.eval(X).reshape((-1, 1))
+
+        return self._sol_interpolator(X).reshape((-1, 1))
+
+    def eval_forcing(self, X):
+        if self.forcing_expr == '10*(1 + sin(6.28*x) * sin(6.28*y))':
+            return 10*(1 + jnp.sin(6.28 * X[:, 0]) * jnp.sin(6.28 * X[:, 1])).reshape((-1, 1))
+        else:
+            raise ValueError("THE CURRENT IMPLEMENTATION DOES NOT SUPPORT ARBITRARY FORCING FUNCTIONS.")
 
 class FickOp1D():
     def __init__(self, length_scale):
@@ -209,6 +224,7 @@ class NNetKernel():
 class Kernel:
     def __init__(self, kfunc, op):
         self.kfunc = kfunc
+        self.op = op
         self.__call__ = vmap(self.kfunc)
 
         kfy = lambda x: lambda y: self.kfunc(x, y)

@@ -1,4 +1,4 @@
-name: 'RBF-sm-cl'
+name: 'RBF-lg-cl'
 dim: 2
 gridpts: 30
 key: 641
@@ -18,5 +18,5 @@ train:
 
 model:
   id: "RBF"
-  bandwidth: 0.025
+  bandwidth: 2.5
 

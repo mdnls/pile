@@ -6,7 +6,9 @@ key: 641
 train:
   opt:
     id: 'adam'
-    steps: 10001
+    n_data_pretrain: 2001
+    n_interp_train: 2001
+    steps: 6001
     lr: 0.001
   diagnostics:
     gen_every: 100
@@ -19,7 +21,7 @@ train:
     dist: 'uniform'
     with_boundary: True
   reg:
-    PINN: [1, 1, 1]
+    PINN: [8, 8, 1]
     DATA: [8, 12, 5]
 
 model:

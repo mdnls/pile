@@ -20,7 +20,7 @@ train:
     with_boundary: True
   reg:
     PINN: [1, 1, 1]
-    DATA: [8, 12, 1]
+    DATA: [800, 1200, 5]
 
 
 model:
